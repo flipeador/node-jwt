@@ -124,8 +124,9 @@ export function verify(token, secretOrPublicKey)
 {
     if (typeof(token) !== 'string') return;
     token = token.split('.', 3);
+    if (token.length !== (secretOrPublicKey ? 3 : 2)) return;
     const header = decode(token[0]);
-    if (token.length === 3 && !(
+    if (secretOrPublicKey && !(
         header.alg.startsWith('HS')
         ? verifyHmac(...token, secretOrPublicKey, header.alg)
         : verifySign(...token, secretOrPublicKey, header.alg)
