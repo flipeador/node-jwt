@@ -10,7 +10,7 @@ function safeurl(data)
     return data
     .replaceAll('+', '-')
     .replaceAll('/', '_')
-    .replace(/[=]+/gu, '');
+    .replace(/[=]+$/u, '');
 }
 
 function unsafeurl(data)
@@ -43,74 +43,53 @@ function decode(data)
 
 function detectKeyFormat(key)
 {
-    if (typeof(key) !== 'string')
-        return 'jwk';
-    if (key.startsWith('--'))
+    if (typeof(key) === 'string')
         return 'pem';
-    return 'der';
+    if (key instanceof Uint8Array)
+        return 'der';
+    return 'jwk';
 }
 
-function checkPublicKey(key)
+export function createPublicKey(key, format, type='spki')
 {
     if (key instanceof crypto.KeyObject)
         return key;
-    return crypto.createPublicKey({
-        key,
-        format: detectKeyFormat(key)
-    });
+    format ??= detectKeyFormat(key);
+    return crypto.createPublicKey({ key, format, type });
 }
 
-function checkPrivateKey(key)
+export function createPrivateKey(key, passphrase, format, type='pkcs8')
 {
     if (key instanceof crypto.KeyObject)
         return key;
-    return crypto.createPrivateKey({
-        key,
-        format: detectKeyFormat(key)
-    });
-}
-
-/**
- * Create a common payload.
- */
-export function payload(id, issuer, audience, duration, other)
-{
-    const timestamp = Date.now();
-    return {
-        sub: id, // subject
-        iss: issuer, // issuer
-        aud: audience, // audience
-        exp: timestamp + duration, // expiry timestamp
-        iat: timestamp, // issued at
-        ...other
-    };
+    format ??= detectKeyFormat(key);
+    return crypto.createPrivateKey({ key, format, type, passphrase });
 }
 
 /**
  * Generate an asymmetric public and private key pair.
- * @param modulusLength Key size, in bits.
  */
-export function generateKeyPair(modulusLength=2048)
-{
+export function generateKeyPair(options={}) {
+    if (typeof(options) === 'number')
+        options = { modulusLength: options };
+    options.modulusLength ??= 2048;
+    options.publicKeyEncoding ??= { };
+    options.publicKeyEncoding.type ??= 'spki';
+    options.publicKeyEncoding.format ??= 'pem';
+    options.privateKeyEncoding ??= { };
+    options.privateKeyEncoding.type ??= 'pkcs8';
+    options.privateKeyEncoding.format ??= 'pem';
     return new Promise((resolve, reject) => {
-        crypto.generateKeyPair('rsa', {
-            modulusLength,
-            publicKeyEncoding: {
-                type: 'spki',
-                format: 'pem'
-            },
-            privateKeyEncoding: {
-                type: 'pkcs8',
-                format: 'pem'
+        crypto.generateKeyPair('rsa', options,
+            (error, publicKey, privateKey) => {
+                if (error) return reject(error);
+                resolve({ publicKey, privateKey });
             }
-        }, (error, publicKey, privateKey) => {
-            if (error) return reject(error);
-            resolve({ publicKey, privateKey });
-        });
+        );
     });
 }
 
-function createHmac(header, payload, secret, algorithm)
+function signHMAC(header, payload, secret, algorithm)
 {
     return safeurl(crypto
         .createHmac(`sha${algorithm.slice(-3)}`, secret)
@@ -119,26 +98,31 @@ function createHmac(header, payload, secret, algorithm)
     );
 }
 
-function verifyHmac(header, payload, signature, secret, algorithm)
+function verifyHMAC(header, payload, signature, secret, algorithm)
 {
-    return signature === createHmac(header, payload, secret, algorithm);
+    return crypto.timingSafeEqual(
+        crypto.createHmac(`sha${algorithm.slice(-3)}`, secret)
+        .update(`${header}.${payload}`)
+        .digest(),
+        Buffer.from(unsafeurl(signature), 'base64')
+    );
 }
 
-function createSign(header, payload, privateKey, algorithm)
+function signRSA(header, payload, privateKey, algorithm)
 {
     return safeurl(crypto
         .createSign(`RSA-SHA${algorithm.slice(-3)}`)
         .update(`${header}.${payload}`)
-        .sign(checkPrivateKey(privateKey), 'base64')
+        .sign(createPrivateKey(privateKey), 'base64')
     );
 }
 
-function verifySign(header, payload, signature, publicKey, algorithm)
+function verifyRSA(header, payload, signature, publicKey, algorithm)
 {
     return crypto
     .createVerify(`RSA-SHA${algorithm.slice(-3)}`)
     .update(`${header}.${payload}`)
-    .verify(checkPublicKey(publicKey), unsafeurl(signature), 'base64');
+    .verify(createPublicKey(publicKey), unsafeurl(signature), 'base64');
 }
 
 export function sign(header, payload, secretOrPrivateKey)
@@ -148,8 +132,8 @@ export function sign(header, payload, secretOrPrivateKey)
     const eHeader = encode(header);
     const ePayload = encode(payload);
     const signature = header.alg.startsWith('HS')
-        ? createHmac(eHeader, ePayload, secretOrPrivateKey, header.alg)
-        : createSign(eHeader, ePayload, secretOrPrivateKey, header.alg);
+        ? signHMAC(eHeader, ePayload, secretOrPrivateKey, header.alg)
+        : signRSA(eHeader, ePayload, secretOrPrivateKey, header.alg);
     return `${eHeader}.${ePayload}.${signature}`;
 }
 
@@ -161,37 +145,37 @@ export function verify(token, secretOrPublicKey)
     const header = decode(token[0]);
     if (secretOrPublicKey && !(
         header.alg.startsWith('HS')
-        ? verifyHmac(...token, secretOrPublicKey, header.alg)
-        : verifySign(...token, secretOrPublicKey, header.alg)
+        ? verifyHMAC(...token, secretOrPublicKey, header.alg)
+        : verifyRSA(...token, secretOrPublicKey, header.alg)
     )) return;
     return { header, payload: decode(token[1]) };
 }
 
-export function refresh(token, threshold, secretOrPublicKey, privateKey)
+export function refresh(token, percent, privateKey)
 {
-    const jwt = verify(token, secretOrPublicKey);
+    const jwt = verify(token, privateKey);
     if (!jwt) return;
-    if (jwt.payload.exp) { // expiry (timestamp)
-        jwt.remaining = jwt.payload.exp - Date.now();
-        if (jwt.payload.iat) { // issued at (timestamp)
+    jwt.token = token;
+    if (jwt.payload.exp) {
+        const currentTime = Math.floor(Date.now() / 1000);
+        jwt.remaining = jwt.payload.exp - currentTime;
+        if (jwt.payload.iat && jwt.remaining > 0) {
             jwt.duration = jwt.payload.exp - jwt.payload.iat;
-            if (jwt.remaining > 0)
-                jwt.updated = jwt.remaining < (jwt.duration - threshold);
+            jwt.updated = jwt.remaining < (jwt.duration * percent / 100);
+            if (jwt.updated) {
+                jwt.payload.exp = currentTime + jwt.duration;
+                jwt.payload.iat = currentTime;
+                jwt.token = sign(jwt.header, jwt.payload, privateKey);
+            }
         }
     }
-    if (jwt.updated) {
-        const time = Date.now();
-        jwt.payload.exp = time + jwt.duration;
-        jwt.payload.iat = time;
-        jwt.token = sign(jwt.header, jwt.payload, privateKey??secretOrPublicKey);
-    } else
-        jwt.token = token;
     return jwt;
 }
 
 export default {
+    createPublicKey,
+    createPrivateKey,
     generateKeyPair,
-    payload,
     sign,
     verify,
     refresh

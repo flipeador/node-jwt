@@ -1,5 +1,5 @@
 // ESLint Flat Configuration File
-// https://eslint.org/docs/latest/use/configure
+// https://eslint.org/docs/latest/use/configure/configuration-files-new
 
 import js from '@eslint/js';
 import globals from 'globals';
@@ -39,7 +39,6 @@ export default [
             'indent': 'off',
             'init-declarations': 'off',
             'line-comment-position': 'off',
-            'linebreak-style': ['error', 'windows'],
             'lines-around-comment': 'off',
             'lines-between-class-members': 'off',
             'max-classes-per-file': 'off',

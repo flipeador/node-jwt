@@ -6,25 +6,25 @@ JWT is an internet standard for creating data with optional signature whose payl
 
 - Generate, decode, verify and refresh JWTs.
 - Generate asymmetric public and private key pairs.
-- Signing algorithms: `HS256 HS384 HS512 RS256 RS384 RS512`.
+- Signing algorithms: `HS256` `HS384` `HS512` `RS256` `RS384` `RS512`.
 
-```
-┌───────────────────────────────────────────────────────────────────────────────────────────────┐
-│                                     Standard claim fields                                     │
-├───────────────────────────────┬─────┬─────────────────────────────────────────────────────────┤
-│ Name                          │ Key │ Description                                             │
-├───────────────────────────────┼─────┼─────────────────────────────────────────────────────────┤
-│ Issuer                        │ iss │ Entity or provider to generate and issue the token.     │
-│ Subject                       │ sub │ Entity identified by the token.                         │
-│ Audience                      │ aud │ Target audience for the token.                          │
-│ Expiry                        │ exp │ Timestamp after which the token should not be accepted. │
-│ Issued at                     │ iat │ Date at which the token has been issued.                │
-└───────────────────────────────┴─────┴─────────────────────────────────────────────────────────┘
-```
+#### Standard Claim Fields
+
+| Key  | Name | Description |
+| :---: | --- | --- |
+| `iss` | Issuer | Entity or provider that issued the token. |
+| `sub` | Subject | Entity identified by the token. |
+| `aud` | Audience | Recipients that the token is intended for. |
+| `exp` | Expiration time | Time after which the token should not be accepted. |
+| `iat` | Issued at | Time at which the token has been issued. |
+
+The **time** is the number of seconds that has elapsed since `1970-01-01 00:00:00Z` (Unix time).
+
+> [!CAUTION]
+> JWTs may not be suitable for long sessions, tokens should have a shorter lifespan and it can impact user experience.
 
 > [!NOTE]
-> - JWTs may not be suitable for long sessions, tokens should have a shorter lifespan and it can impact user experience.
-> - This is a lightweight alternative library to [jsonwebtoken][auth0jwt] with no dependencies.
+> This is a lightweight alternative library to [jsonwebtoken][auth0jwt] with no dependencies.
 
 Visit [JWT.io][jwtio] to decode, verify and generate JWTs.
 
@@ -37,104 +37,147 @@ npm i flipeador/node-jwt#semver:^1.0.0
 ## Examples
 
 <details>
-<summary><h4>Symmetric signing method</h4></summary>
+<summary><h4>Symmetric Signing Method</h4></summary>
 
-The same secret key is used to both generate and verify the signature.
+The same secret key is used to both sign and verify.
 
 ```js
 import jwt from '@flipeador/node-jwt';
 
-const secret = 'HS256_HMAC_SECRET';
+const SECRET = 'HS256_HMAC_SECRET';
+
+const currentTime = Math.floor(Date.now() / 1000);
+const maxAge = 86_400; // 1 day (seconds)
 
 const token = jwt.sign(
-    { alg: 'HS256', typ: 'JWT' }, // header
-    { data: 'Hello World!' }, // payload
-    secret
+    // header
+    { alg: 'HS256', typ: 'JWT' },
+    // payload
+    {
+        email: 'email@example.com',
+        exp: currentTime + maxAge,
+        iat: currentTime
+    },
+    // secret
+    SECRET
 );
 
-console.log('token:', token);
-console.log('verify:', jwt.verify(token, secret));
-```
+console.log(token);
 
-```
-token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJkYXRhIjoiSGVsbG8gV29ybGQhIn0.zfVlqtZkpgYY4W_O1WheoqYIZ99zsb3qin4I7kFtDKw
-verify: {
-  header: { alg: 'HS256', typ: 'JWT' },
-  payload: { data: 'Hello World!' }
-}
+// Verify signature.
+const { payload } = jwt.verify(token, SECRET);
+
+// Verify expiration time.
+if (payload.exp <= Date.now() / 1000)
+    throw new Error('Expired token');
+
+// Additional verification may be required.
+// E.g., Google OAuth requires verification of iss and aud.
+if (
+    payload.iss !== 'https://accounts.google.com' ||
+    payload.aud !== 'MY_APP_GOOGLE_CLIENT_ID'
+) { /* throw new Error('Invalid credentials.'); */ }
 ```
 
 </details>
 
 <details>
-<summary><h4>Asymmetric encryption method</h4></summary>
+<summary><h4>Asymmetric Signing Method</h4></summary>
 
-A pair of private and public keys are used to encrypt and decrypt the data.
-
-Asymmetric keys that are neither a string nor a [KeyObject][ko], are interpreted as a key in the `JWK` format.
+A pair of private and public keys are used to sign and verify.
 
 ```js
 import jwt from '@flipeador/node-jwt';
 
+// By default, keys are generated in PEM format.
 const { privateKey, publicKey } = await jwt.generateKeyPair();
 
 const token = jwt.sign(
     { alg: 'RS256', typ: 'JWT' }, // header
     { data: 'Hello World!' }, // payload
+    // Must use the private key to sign.
     privateKey
 );
 
-console.log('token:', token);
-console.log('verify:', jwt.verify(token, publicKey));
+console.log(token);
+
+// Use the public key to verify.
+console.log('verify with public key:',
+    jwt.verify(token, publicKey));
+
+// Because public keys can be derived from private keys,
+// a private key may be passed instead of a public key.
+console.log('verify with private key:',
+    jwt.verify(token, privateKey));
+
+// You can combine both PEM keys in the same file and pass them together.
+console.log('verify with public+private key:',
+    jwt.verify(token, publicKey + privateKey));
 ```
 
-```
-token: eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJkYXRhIjoiSGVsbG8gV29ybGQhIn0.jjHulHUp7orPVLyprMDnO3e9sk4PRpKKzAiUxe7F5bZoqvq9RX317pRJkrCQT8IFWQVyQXR4qJnJf7442czp40mjjMU7lVBTu8lOmCTbfwWnB-3yzySNX0kZIaCBrwn_LbZBh0AsXPJ3atlSoIFuIEM53OoDMbOTpsuX2B6OkhKuh9bZCpdPMYrkdI4RPrxHVdaaH5V_9geVXPG2LQ8G_zBfJOZfg0jpsmiGfEG_DJjys8TP4EbP7z5ZL7cyR_XooFwzEJKafVxHzgMbvbtCyu2G2xeGxs7Xbv2-4zVqMsTGt5pvNh2ehVp5F6NwMe9chzbujS92dZtsljfTaBjfAA
-verify: {
-  header: { alg: 'RS256', typ: 'JWT' },
-  payload: { data: 'Hello World!' }
-}
+```js
+import jwt from '@flipeador/node-jwt';
+
+const SECRET = 'secret';
+
+// Generate public and private keys in JWK and DER format.
+const { privateKey, publicKey } = await jwt.generateKeyPair({
+    // JWK keys are exported as a key-value Object.
+    publicKeyEncoding: { format: 'jwk' },
+    // DER keys are exported as a Buffer.
+    privateKeyEncoding: {
+        format: 'der',
+        // Encrypt the key by specifying a cipher.
+        cipher: 'aes-256-cbc',
+        passphrase: SECRET,
+    }
+});
+
+// Since the private key is encrypted, create a KeyObject with the secret.
+const privateKeyObject = jwt.createPrivateKey(privateKey, SECRET);
+
+const token = jwt.sign(
+    { alg: 'RS256', typ: 'JWT' }, // header
+    { data: 'Hello World!' }, // payload
+    privateKeyObject
+);
+
+console.log(token);
+console.log(jwt.verify(token, publicKey));
 ```
 
 </details>
 
 <details>
-<summary><h4>Generate and refresh</h4></summary>
+<summary><h4>Generate & Refresh</h4></summary>
 
 ```js
 import { setTimeout } from 'node:timers';
 import jwt from '@flipeador/node-jwt';
 
+const currentTime = Math.floor(Date.now() / 1000);
+const maxAge = 5; // 5 seconds
+
 const token = jwt.sign(
-    { typ: 'JWT' }, // header
-    jwt.payload( // payload
-        'id',
-        'issuer',
-        'audience',
-        5000, // duration (ms)
-        {
-            name: 'John Doe',
-            email: 'example@email.com'
-        }
-    )
+    { typ: 'JWT' },
+    {
+        email: 'email@example.com',
+        exp: currentTime + maxAge,
+        iat: currentTime
+    }
 );
 
-const threshold = 1000;
+// The token is refreshed only if:
+//   It has not expired.
+//   The remaining expiration seconds are less than 25% of maxAge.
+// The maxAge is calculated with 'exp - iat' (seconds).
+const percent = 25;
 
-console.log('token:', token);
-console.log('refresh:', jwt.refresh(token, threshold));
-
-console.log('-'.repeat(50));
+console.log(jwt.refresh(token, percent));
 
 setTimeout(() => {
-    const result = jwt.refresh(token, threshold);
-    // If the token has been updated.
-    if (result.updated) {
-        const newToken = result.token;
-        console.log('newToken:', newToken);
-        console.log('refresh:', result);
-    }
-}, threshold);
+    console.log(jwt.refresh(token, percent));
+}, 4000);
 ```
 
 </details>
